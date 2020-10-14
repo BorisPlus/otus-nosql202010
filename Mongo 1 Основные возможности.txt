@@ -1,0 +1,103 @@
+-- развернем ВМ
+gcloud beta compute --project=calm-tendril-290110 instances create mongo --zone=us-central1-a --machine-type=e2-medium --subnet=default --network-tier=PREMIUM --maintenance-policy=MIGRATE --service-account=322426944095-compute@developer.gserviceaccount.com --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/trace.append --image=ubuntu-2004-focal-v20200907 --image-project=ubuntu-os-cloud --boot-disk-size=10GB --boot-disk-type=pd-ssd --boot-disk-device-name=mongo --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --reservation-affinity=any
+
+gcloud compute ssh mongo
+
+https://docs.mongodb.com/manual/tutorial/install-mongodb-on-ubuntu/
+
+-- https://stackoverflow.com/questions/63510212/mongod-command-on-linuxubuntu-spits-out-random-messages
+
+-- установим монго
+$ wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add - && echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list && sudo apt-get update && sudo apt-get install -y mongodb-org
+
+$ sudo mkdir /home/mongo &&  sudo mkdir /home/mongo/db1 && sudo chmod 777 /home/mongo/db1
+$ mongod --dbpath /home/mongo/db1 --port 27001 --fork --logpath /home/mongo/db1/db1.log --pidfilepath /home/mongo/db1/db1.pid
+$ ps aux | grep mongo| grep -Ev "grep" //посмотрим, что процесс успешно запущен
+
+$ mongo --port 27001
+
+
+-- error
+db.inventory.insert([
+    { _id: 1, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }
+    { _id: 2, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] }
+    { _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] }
+    { _id: 4, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] }
+    { _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ]}
+])
+
+
+-- error
+db.inventory.insert({ _id: 1, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] },
+{ _id: 2, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 4, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ]})
+
+-- good
+db.inventory.insert([
+{ _id: 2, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 4, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 1, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }])
+
+db.inventory.insert([
+{ _id: 10, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 4, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 1, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }])
+
+-- при попытке вставить батч, где есть повторяющийся ключ
+db.inventory.insertMany([
+{ _id: 11, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 12, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 10, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }])
+
+-- при использовании ordered : false - вставятся все несовпадающие по ключу записи
+db.inventory.insertMany([
+{ _id: 10, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 34, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 12, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 15, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 20, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }],{ ordered: false })
+
+-- поиск в поддокументе
+db.inventory.find({"item.name" : "ab"})
+
+-- поиск по двум полям
+db.products.find({item: "card", qty: 15}) 
+-- по условию ИЛИ
+db.inventory.find( { $or: [ { qty: { $lt: 20 } }, { price: 10 } ] } )
+
+-- поиск одного значения по разным полям
+db.inventory.insert([{ _id: 33, item: { name: "cd", code: "123" }, qty: 10, tags: [ "B" ], q : 20 }])
+db.inventory.find( { $or: [ { qty: 20}, { q: 20 } ] } )
+
+--выбрать все поддокументы
+db.inventory.find({},{"item" : 1 })
+
+
+-- а можно пример с $in (найти, где есть tag: C)
+db.inventory.find( { tags: { $in: [ "C" ] } } )
+
+-- а если найти по "B" в подмассиве?
+db.inventory.find( { tags: { $elemMatch: { $elemMatch: { $in: [ "B" ]} } } } )
+
+-- с помощью aggregation pipeline
+db.inventory.aggregate([
+   { $match: { "tags": { $elemMatch: { $elemMatch:{ $in :["B"] } } } } }
+])
+
+
+
+
+
+
+
+
+
+
