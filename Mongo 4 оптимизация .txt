@@ -1,0 +1,123 @@
+-- развернем ВМ mongo 4.41
+gcloud beta compute --project=calm-tendril-290110 instances create mongo --zone=us-central1-a --machine-type=e2-medium --subnet=default --network-tier=PREMIUM --maintenance-policy=MIGRATE --service-account=322426944095-compute@developer.gserviceaccount.com --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/trace.append --image=ubuntu-2004-focal-v20200907 --image-project=ubuntu-os-cloud --boot-disk-size=10GB --boot-disk-type=pd-ssd --boot-disk-device-name=mongo --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --reservation-affinity=any
+
+gcloud compute ssh mongo
+
+https://docs.mongodb.com/manual/tutorial/install-mongodb-on-ubuntu/
+
+-- https://stackoverflow.com/questions/63510212/mongod-command-on-linuxubuntu-spits-out-random-messages
+
+-- установим монго
+$ wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add - && echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list && sudo apt-get update && sudo apt-get install -y mongodb-org
+
+$ sudo mkdir /home/mongo &&  sudo mkdir /home/mongo/db1 && sudo chmod 777 /home/mongo/db1 && mongod --dbpath /home/mongo/db1 --port 27001 --fork --logpath /home/mongo/db1/db1.log --pidfilepath /home/mongo/db1/db1.pid
+$ ps aux | grep mongo| grep -Ev "grep" //посмотрим, что процесс успешно запущен
+
+$ mongo --port 27001
+
+> db.orders.insertMany([
+    {custID:"10001",amount:500,status:"A"},
+    {custID:"10001",amount:250,status:"A"},
+    {custID:"10002",amount:200,status:"A"},
+    {custID:"10001",amount: 300, status:"D"}])
+
+> db.getProfilingStatus()
+> db.setProfilingLevel(2)
+> db.orders.find()
+> db.system.profile.find().sort({$natural:-1});
+> db.inventory.insert([
+{ _id: 2, item: { name: "cd", code: "123" }, qty: 20, tags: [ "B" ] },
+{ _id: 3, item: { name: "ij", code: "456" }, qty: 25, tags: [ "A", "B" ] },
+{ _id: 4, item: { name: "xy", code: "456" }, qty: 30, tags: [ "B", "A" ] },
+{ _id: 5, item: { name: "mn", code: "000" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 6, item: { name: "mn", code: "222" }, qty: 20, tags: [ [ "A", "B" ], "C" ] },
+{ _id: 1, item: { name: "ab", code: "123" }, qty: 15, tags: [ "A", "B", "C" ] }])
+
+> db.system.profile.find().sort({$natural:-1});
+
+-- количество “проблемных” запросов(count) в определенный день и средним временем выполнения(avg_ms)
+db.system.profile.aggregate([{$match: {ts:{$gte:ISODate("2020-09-20T00:00:00.000Z"), $lt:ISODate("2020-10-20T00:00:00.000Z")}}}, {$group:{_id:null, count:{$sum:1}, avg_ms:{$avg:'$millis'}}}])
+
+-- количество “проблемных” запросов(count) в определенный день и средним временем выполнения(avg_ms) + метрики
+db.system.profile.aggregate([{$match: {ts:{$gte:ISODate("2020-09-30T00:00:00.000Z"), $lt:ISODate("2020-10-20T00:00:00.000Z")}}}, {$group:{_id:'$op', count:{$sum:1}, avg_ms:{$avg:'$millis'}, min_ms:{$min:'$millis'}, max_ms:{$max:'$millis'}}}])
+
+-- сгруппируем данные по коллекции
+db.system.profile.aggregate([{$match: {ts:{$gte:ISODate("2020-09-30T00:00:00.000Z"), $lt:ISODate("2020-10-20T00:00:00.000Z")}}}, {$group:{_id:'$ns', count:{$sum:1}, avg_ms:{$avg:'$millis'}, min_ms:{$min:'$millis'}, max_ms:{$max:'$millis'}}}])
+
+-- гистограмма с разбиением по 5мс
+db.system.profile.aggregate([{$project: {'ms':{'$subtract':['$millis',{$mod:['$millis', 5]}]}}}, {$group:{_id:'$ms', sum:{$sum:1}}}, {$sort:{_id:1}}]) 
+
+Автоматизируем процесс:
+создадим файл profile.js
+function profile_hist(){
+    res = db.system.profile.aggregate([{$project: {'ms':{'$subtract':['$millis',{$mod:['$millis', 5]}]}}}, {$group:{_id:'$ms', sum:{$sum:1}}}, {$sort:{_id:1}}]);
+    res.forEach(function(i) { print(i['_id'], '\t',i['sum']); });
+}
+
+$ mongo --port 27001 --shell profile.js
+> profile_hist()
+
+-- логи
+$ tail -f /home/mongo/db1/db1.log
+
+-- планы запросов
+> db.inventory.explain().find()
+
+-- индексы
+> db.inventory.createIndex({item : 1})
+
+> db.inventory.getIndexes()
+
+> db.inventory.explain().find({"item.name" : "cd"})
+> db.inventory.explain().find({"item" : "cd"})
+> db.inventory.explain().find({"item" : { name: "cd", code: "123" }})
+
+-- TTL -- только для поля с датой
+> db.users.insert({"email" : "test"})
+> db.users.find()
+> db.users.createIndex(
+ { email: 1 },
+ { expireAfterSeconds: 10 }
+)
+> db.users.find()
+
+-- null
+> db.testnull.insert([{ "_id" : ObjectId("4ba0f0dfd22aa494fd523621"), "y" : null },
+{ "_id" : ObjectId("4ba0f0dfd22aa494fd523622"), "y" : 1 },
+{ "_id" : ObjectId("4ba0f148d22aa494fd523623"), "y" : 2 }])
+> db.testnull.find({ y: null }) -- 1 
+> db.testnull.find({ z: null }) -- 3
+> db.testnull.find({ z: { $eq: null, $exists: true } })
+
+--update vs replace
+> db.people.insert({name: 'Tom', age: 29})
+> db.people.update({name: 'Tom'}, {age2: 30, name2: 'Tom'})
+> db.people.find()
+> db.people.replaceOne({name2: 'Tom'}, {age: 30, name: 'Tom'})
+> db.people.updateOne({name: 'Tom'}, {$set: {age2: 30}})
+
+--
+> db.people.insert({name: 'Tom', age: 28, marks: [50, 60, 70]})
+> db.people.update({name: "Tom", marks: 50}, {"$set": {"marks.$": 55}})
+> db.people.find()
+
+
+
+> db.people.insert({name: 'Tom', age: 28, marks: [{subject: "English", marks: 90},{subject: "Maths", marks: 100}, {subject: "Computes", marks: 20}]})
+> db.people.update({name: "Tom", "marks.subject": "English"},{"$set":{"marks.$.marks": 85}})
+
+
+-- gridfs
+
+$ curl -O  https://dl.google.com/linux/direct/google-chrome-stable_current_x86_64.rpm
+$ mv google-chrome-stable_current_x86_64.rpm chrome.rpm
+$ mongofiles --port 27001 -d=records put chrome.rpm
+$ mongofiles --port 27001 -d=records search chrome
+$ rm chrome.rpm
+$ mongofiles --port 27001 -d=records get chrome.rpm
+$ mongo --port 27001
+> show dbs
+> use records
+> show collections
+> db.fs.files.find( { filename: "chrome.rpm" } ).sort( { uploadDate: 1 } )
+-- db.fs.chunks.find()

@@ -1,0 +1,141 @@
+-- развернем ВМ mongo 4.41
+gcloud beta compute --project=calm-tendril-290110 instances create mongo --zone=us-central1-a --machine-type=e2-medium --subnet=default --network-tier=PREMIUM --maintenance-policy=MIGRATE --service-account=322426944095-compute@developer.gserviceaccount.com --scopes=https://www.googleapis.com/auth/devstorage.read_only,https://www.googleapis.com/auth/logging.write,https://www.googleapis.com/auth/monitoring.write,https://www.googleapis.com/auth/servicecontrol,https://www.googleapis.com/auth/service.management.readonly,https://www.googleapis.com/auth/trace.append --image=ubuntu-2004-focal-v20200907 --image-project=ubuntu-os-cloud --boot-disk-size=10GB --boot-disk-type=pd-ssd --boot-disk-device-name=mongo --no-shielded-secure-boot --shielded-vtpm --shielded-integrity-monitoring --reservation-affinity=any
+
+gcloud compute ssh mongo
+
+https://docs.mongodb.com/manual/tutorial/install-mongodb-on-ubuntu/
+
+-- https://stackoverflow.com/questions/63510212/mongod-command-on-linuxubuntu-spits-out-random-messages
+
+-- установим монго
+$ wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add - && echo "deb [ arch=amd64,arm64 ] https://repo.mongodb.org/apt/ubuntu focal/mongodb-org/4.4 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-4.4.list && sudo apt-get update && sudo apt-get install -y mongodb-org
+
+$ sudo mkdir /home/mongo &&  sudo mkdir /home/mongo/db1 && sudo chmod 777 /home/mongo/db1 && mongod --dbpath /home/mongo/db1 --port 27001 --fork --logpath /home/mongo/db1/db1.log --pidfilepath /home/mongo/db1/db1.pid
+$ ps aux | grep mongo| grep -Ev "grep" //посмотрим, что процесс успешно запущен
+
+$ mongo --port 27001
+
+-- права доступа
+
+db = db.getSiblingDB("admin")
+db.createRole(
+    {      
+     role: "superRoot",      
+     privileges:[
+        { resource: {anyResource:true}, actions: ["anyAction"]}
+     ],      
+     roles:[] 
+    }
+)
+db.createUser({      
+     user: "companyDBA",      
+     pwd: "EWqeeFpUt9*8zq",      
+     roles: ["superRoot"] 
+})
+
+> use admin
+> db.shutdownServer()
+-- запускаем сервер с аутентификацией
+$ mongod --dbpath /home/mongo/db1 --port 27001 --auth --fork --logpath /home/mongo/db1/db1.log --pidfilepath /home/mongo/db1/db1.pid
+$ mongo --port 27001 -u companyDBA -p EWqeeFpUt9*8zq --authenticationDatabase "admin"
+
+-- перезапускаем без безопасности
+> use admin
+> db.shutdownServer()
+$ mongod --dbpath /home/mongo/db1 --port 27001 --fork --logpath /home/mongo/db1/db1.log --pidfilepath /home/mongo/db1/db1.pid
+
+
+-- json манифест для проверки корректности ввода
+db.createCollection( "people" , {
+   validator: { $jsonSchema: {
+      bsonType: "object",
+      required: [ "name", "surname", "email" ],
+      properties: {
+         name: {
+            bsonType: "string",
+            description: "required and must be a string" },
+         surname: {
+            bsonType: "string",
+            description: "required and must be a string" },
+         email: {
+            bsonType: "string",
+            pattern: "^.+\@.+$",
+            description: "required and must be a valid email address" },
+         year_of_birth: {
+            bsonType: "int",
+            minimum: 1900,
+            maximum: 2020,
+            description: "the value must be in the range 1900-2020" },
+         gender: {
+            enum: [ "M", "F" ],
+            description: "can be only M or F" }
+      }
+   }
+}})
+
+db.people.insert( { name : "John", surname : "Smith" } )
+db.people.insert( { name : "John", surname : "Smith", email : "john.smith.gmail.com" } )
+db.people.insert( { name : "John", surname : "Smith", email : "john.smith@gmail.com" } )
+db.getCollectionInfos( {name: "people"} )
+
+
+-- посмтрим на правила валидации на уже существующей коллекции
+db.people3.insert( {name: "Corrado", surname: "Pandiani", year_of_birth: NumberLong(1971)} )
+db.people3.insert( {name: "Tom", surname: "Cruise", year_of_birth: NumberLong(1961), gender: "M"} )
+db.people3.insert( {name: "Kevin", surname: "Bacon", year_of_birth: NumberLong(1964), gender: "M", shirt_size: "L"} )
+db.runCommand( { collMod: "people3",
+   validator: {
+      $jsonSchema : {
+         bsonType: "object",
+         required: [ "name", "surname", "gender" ],
+         properties: {
+            name: {
+               bsonType: "string",
+               description: "required and must be a string" },
+            surname: {
+               bsonType: "string",
+               description: "required and must be a string" },
+            gender: {
+               enum: [ "M", "F" ],
+               description: "required and must be M or F" }
+         }
+       }
+},
+validationLevel: "moderate",
+validationAction: "warn"
+})
+
+$ sudo cat /home/mongo/db1/db1.log
+db.people3.insert( {name: "Corrado", surname: "Pandiani", year_of_birth: NumberLong(1971)} )
+db.getCollectionInfos( {name: "people3"} )
+$ sudo cat /home/mongo/db1/db1.log
+
+-- бэкап
+
+sudo mkdir /home/mongobackups && sudo chmod 777 /home/mongobackups
+sudo mongodump --port 27001 --db test --out /home/mongobackups/`date +"%m-%d-%y"`
+
+-- sudo crontab -e
+-- 3 3 * * * mongodump --port 27001 --out /home/mongobackups/`date +"%m-%d-%y"`
+-- find /home/mongobackups/ -mtime +7 -exec rm -rf {} \;
+
+sudo mongorestore --port 27001 --db newdb --drop /home/mongobackups/10-05-20/test/
+
+-- мониторинг
+-- облачный
+> db.enableFreeMonitoring()
+
+-- утилита
+mongostat --port 27001
+
+mongotop --port 27001
+
+-- утилиты
+mongoexport
+sudo mongoexport --port 27001 -d test -c people3 -o export.json
+sudo mongoexport --port 27001 -d test -c people3 -f "name,surname" -o export.json
+sudo mongoexport --port 27001 -d test -c people3 -f "name,surname" -q '{year_of_birth:{$gt:1963}}' -o export.json
+
+mongoimport
+mongoimport --port 27001 -d test -c people5 --file export.json
+mongoimport --port 27001 -d test -c people5 --file export.json --upsert
